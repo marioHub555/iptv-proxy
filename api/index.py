@@ -328,4 +328,5 @@ def video_feed():
 
     return Response(generate(), mimetype='video/mp4')
 
-# ملاحظة: في بيئة Vercel لا نحتاج لسطر app.run() لأن المنصة تشغل التطبيق تلقائياً كـ Serverless
+if __name__ == "__main__":
+    app.run()
