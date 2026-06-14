@@ -2,6 +2,7 @@ from flask import Flask, Response, request, render_template_string, jsonify
 import subprocess
 import requests
 import re
+import time
 from urllib.parse import quote, unquote
 
 app = Flask(__name__)
@@ -125,6 +126,11 @@ HTML_INTERFACE = '''
     var allChannels = [];
     var selectedChannelUrl = "";
 
+    // للحصول على البادئة المناسبة تلقائياً للمسارات (مثال لبيئة Vercel أو الخوادم العادية)
+    function getApiPrefix() {
+        return window.location.pathname.startsWith('/api') ? '/api' : '';
+    }
+
     function handleSourceChange() {
         var type = document.getElementById("sourceType").value;
         document.getElementById("singleArea").style.display = (type === "single") ? "block" : "none";
@@ -145,11 +151,12 @@ HTML_INTERFACE = '''
     function processM3U() {
         var loading = document.getElementById("loadingText");
         loading.style.display = "block";
+        var prefix = getApiPrefix();
 
         if (currentM3uMethod === 'link') {
             var m3uUrl = document.getElementById("m3uUrl").value;
             if (!m3uUrl) { loading.style.display = "none"; alert("أدخل رابط M3U أولاً!"); return; }
-            fetch('/api/parse_m3u_url?url=' + encodeURIComponent(m3uUrl))
+            fetch(prefix + '/parse_m3u_url?url=' + encodeURIComponent(m3uUrl))
                 .then(function(res) { return res.json(); })
                 .then(function(data) { populateChannels(data); loading.style.display = "none"; })
                 .catch(function() { loading.style.display = "none"; alert("خطأ في جلب الرابط."); });
@@ -158,7 +165,7 @@ HTML_INTERFACE = '''
             if (fileInput.files.length === 0) { loading.style.display = "none"; alert("اختر ملف M3U أولاً!"); return; }
             var formData = new FormData();
             formData.append("file", fileInput.files[0]);
-            fetch('/api/parse_m3u_file', { method: 'POST', body: formData })
+            fetch(prefix + '/parse_m3u_file', { method: 'POST', body: formData })
                 .then(function(res) { return res.json(); })
                 .then(function(data) { populateChannels(data); loading.style.display = "none"; })
                 .catch(function() { loading.style.display = "none"; alert("خطأ في قراءة الملف."); });
@@ -214,7 +221,8 @@ HTML_INTERFACE = '''
         }
         var v_kbps = document.getElementById("videoKbps").value;
         var a_kbps = document.getElementById("audioKbps").value;
-        var streamUrl = "/api/video_feed?url=" + encodeURIComponent(url) + "&v_kbps=" + v_kbps + "&a_kbps=" + a_kbps + "&t=" + new Date().getTime();
+        var prefix = getApiPrefix();
+        var streamUrl = prefix + "/video_feed?url=" + encodeURIComponent(url) + "&v_kbps=" + v_kbps + "&a_kbps=" + a_kbps + "&t=" + new Date().getTime();
 
         var videoBox = document.getElementById("videoBox");
         var player = document.getElementById("player");
@@ -222,11 +230,10 @@ HTML_INTERFACE = '''
         player.src = streamUrl;
         player.load();
         player.play();
-
+        
         player.onwaiting = function() {
             if (player.buffered.length > 0) {
-                var liveEdge = player.buffered.end(player.buffered.length - 1);
-                player.currentTime = liveEdge - 0.5;
+                player.currentTime = player.buffered.end(player.buffered.length - 1) - 0.5;
             }
         };
     }
@@ -237,9 +244,11 @@ HTML_INTERFACE = '''
 '''
 
 @app.route('/')
+@app.route('/api')
 def index():
     return render_template_string(HTML_INTERFACE)
 
+@app.route('/parse_m3u_url')
 @app.route('/api/parse_m3u_url')
 def parse_m3u_url_endpoint():
     m3u_url = request.args.get('url', '')
@@ -254,6 +263,7 @@ def parse_m3u_url_endpoint():
         channels = []
     return jsonify(channels)
 
+@app.route('/parse_m3u_file', methods=['POST'])
 @app.route('/api/parse_m3u_file', methods=['POST'])
 def parse_m3u_file_endpoint():
     if 'file' not in request.files:
@@ -270,6 +280,7 @@ def parse_m3u_file_endpoint():
         channels = []
     return jsonify(channels)
 
+@app.route('/video_feed')
 @app.route('/api/video_feed')
 def video_feed():
     target_url = unquote(request.args.get('url', ''))
@@ -295,13 +306,12 @@ def video_feed():
         '-maxrate', f'{int(v_kbps)+50}k',
         '-bufsize', f'{int(v_kbps)*2}k',
         '-s', resolution,
-        '-preset', 'veryfast',
+        '-preset', 'ultrafast',
         '-tune', 'zerolatency',
         '-c:a', 'aac',
         '-b:a', f'{a_kbps}k',
         '-async', '1',
         '-vsync', '1',
-        '-max_muxing_queue_size', '1024',
         '-f', 'mp4',
         '-movflags', 'frag_keyframe+empty_moov+faststart',
         '-'
@@ -310,14 +320,13 @@ def video_feed():
     process = subprocess.Popen(ffmpeg_cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
 
     def generate():
-        import time
         empty_count = 0
         try:
             while True:
                 data = process.stdout.read(1024 * 64)
                 if not data:
                     empty_count += 1
-                    if empty_count > 5:
+                    if empty_count > 30:  # إذا انقطع البث تماماً لأكثر من 3 ثوانٍ نغلق بأمان
                         break
                     time.sleep(0.1)
                     continue
@@ -328,5 +337,5 @@ def video_feed():
 
     return Response(generate(), mimetype='video/mp4')
 
-if __name__ == "__main__":
-    app.run()
+if __name__ == '__main__':
+    app.run(host='0.0.0.0', port=7860)
